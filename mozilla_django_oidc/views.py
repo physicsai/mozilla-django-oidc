@@ -12,7 +12,7 @@ try:
 except ImportError:
     # Django < 2.0.0
     from django.core.urlresolvers import reverse
-from django.contrib import auth
+from django.contrib import auth, messages
 from django.http import HttpResponseRedirect
 from django.utils.crypto import get_random_string
 from django.utils.http import is_safe_url
@@ -42,7 +42,8 @@ class OIDCAuthenticationCallbackView(View):
         next_url = self.request.session.get('oidc_login_next', None)
         return next_url or import_from_settings('LOGIN_REDIRECT_URL', '/')
 
-    def login_failure(self):
+    def login_failure(self,request):
+        messages.error(request, "Login failed! Did you authorize access to the site on OIDC?")
         return HttpResponseRedirect(self.failure_url)
 
     def login_success(self):
@@ -58,38 +59,43 @@ class OIDCAuthenticationCallbackView(View):
     def get(self, request):
         """Callback handler for OIDC authorization code flow"""
 
-        nonce = request.session.get('oidc_nonce')
-        if nonce:
-            # Make sure that nonce is not used twice
-            del request.session['oidc_nonce']
+        try: 
+            nonce = request.session.get('oidc_nonce')
+            if nonce:
+                # Make sure that nonce is not used twice
+                del request.session['oidc_nonce']
 
-        if request.GET.get('error'):
-            # Ouch! Something important failed.
-            # Make sure the user doesn't get to continue to be logged in
-            # otherwise the refresh middleware will force the user to
-            # redirect to authorize again if the session refresh has
-            # expired.
-            if is_authenticated(request.user):
-                auth.logout(request)
-            assert not is_authenticated(request.user)
-        elif 'code' in request.GET and 'state' in request.GET:
-            kwargs = {
-                'request': request,
-                'nonce': nonce,
-            }
+            if request.GET.get('error'):
+                # Ouch! Something important failed.
+                # Make sure the user doesn't get to continue to be logged in
+                # otherwise the refresh middleware will force the user to
+                # redirect to authorize again if the session refresh has
+                # expired.
+                if is_authenticated(request.user):
+                    auth.logout(request)
+                assert not is_authenticated(request.user)
+            elif 'code' in request.GET and 'state' in request.GET:
+                kwargs = {
+                    'request': request,
+                    'nonce': nonce,
+                }
 
-            if 'oidc_state' not in request.session:
-                return self.login_failure()
+                if 'oidc_state' not in request.session:
+                    return self.login_failure(request)
 
-            if request.GET['state'] != request.session['oidc_state']:
-                msg = 'Session `oidc_state` does not match the OIDC callback state'
-                raise SuspiciousOperation(msg)
+                if request.GET['state'] != request.session['oidc_state']:
+                    msg = 'Session `oidc_state` does not match the OIDC callback state'
+                    raise SuspiciousOperation(msg)
 
-            self.user = auth.authenticate(**kwargs)
+                self.user = auth.authenticate(**kwargs)
 
-            if self.user and self.user.is_active:
-                return self.login_success()
-        return self.login_failure()
+                if self.user and self.user.is_active:
+                    return self.login_success()
+        except:
+            print("LOGIN FAILED!")
+            return self.login_failure(request)
+
+        return self.login_failure(request)
 
 
 def get_next_url(request, redirect_field_name):
